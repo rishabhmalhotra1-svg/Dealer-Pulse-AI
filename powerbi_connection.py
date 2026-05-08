@@ -25,12 +25,16 @@ DATASET_NAME = os.getenv("POWERBI_DATASET_NAME", "C2B GROWTH - REFERRAL")
 WORKSPACE_NAME = os.getenv("POWERBI_WORKSPACE_NAME", "Sell Analytics")
 
 TENANT_ID = os.getenv("POWERBI_TENANT_ID")
-CLIENT_ID = os.getenv("POWERBI_CLIENT_ID")
+# Use Azure CLI's well-known public client ID — pre-consented in enterprise tenants
+CLIENT_ID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
 USERNAME = os.getenv("POWERBI_USERNAME")
 PASSWORD = os.getenv("POWERBI_PASSWORD")
 
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-SCOPE = ["https://analysis.windows.net/powerbi/api/.default"]
+SCOPE = [
+    "https://analysis.windows.net/powerbi/api/Dataset.Read.All",
+    "https://analysis.windows.net/powerbi/api/Workspace.Read.All",
+]
 
 POWERBI_API_BASE = "https://api.powerbi.com/v1.0/myorg"
 
