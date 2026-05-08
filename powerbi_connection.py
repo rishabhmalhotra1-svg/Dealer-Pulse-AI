@@ -5,7 +5,7 @@ Connection string:
   Data Source=powerbi://api.powerbi.com/v1.0/myorg/Sell%20Analytics;
   Initial Catalog=C2B GROWTH - REFERRAL;
 
-Uses the Power BI REST API (XMLA endpoint) with Azure AD service-principal auth.
+Uses the Power BI REST API with Azure AD username/password (ROPC) auth.
 """
 
 import os
@@ -26,7 +26,8 @@ WORKSPACE_NAME = os.getenv("POWERBI_WORKSPACE_NAME", "Sell Analytics")
 
 TENANT_ID = os.getenv("POWERBI_TENANT_ID")
 CLIENT_ID = os.getenv("POWERBI_CLIENT_ID")
-CLIENT_SECRET = os.getenv("POWERBI_CLIENT_SECRET")
+USERNAME = os.getenv("POWERBI_USERNAME")
+PASSWORD = os.getenv("POWERBI_PASSWORD")
 
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPE = ["https://analysis.windows.net/powerbi/api/.default"]
@@ -35,18 +36,18 @@ POWERBI_API_BASE = "https://api.powerbi.com/v1.0/myorg"
 
 
 # ---------------------------------------------------------------------------
-# Auth
+# Auth — username/password (ROPC) flow, no client secret required
 # ---------------------------------------------------------------------------
 def get_access_token() -> str:
-    """Acquire an OAuth2 bearer token via client-credentials flow."""
+    """Acquire an OAuth2 bearer token via username/password (ROPC) flow."""
     import msal
 
-    app = msal.ConfidentialClientApplication(
-        CLIENT_ID,
-        authority=AUTHORITY,
-        client_credential=CLIENT_SECRET,
+    app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
+    result = app.acquire_token_by_username_password(
+        username=USERNAME,
+        password=PASSWORD,
+        scopes=SCOPE,
     )
-    result = app.acquire_token_for_client(scopes=SCOPE)
     if "access_token" not in result:
         raise RuntimeError(f"Auth failed: {result.get('error_description', result)}")
     return result["access_token"]
