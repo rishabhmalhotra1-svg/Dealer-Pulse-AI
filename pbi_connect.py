@@ -15,8 +15,7 @@ INITIAL_CATALOG     = "C2B GROWTH - REFERRAL"
 WORKSPACE_NAME      = "Sell Analytics"
 DATASET_NAME        = "C2B GROWTH - REFERRAL"
 
-# Public client ID for Power BI / Microsoft Fabric (no app registration needed)
-# This is the well-known public client used by Power BI Desktop / XMLA tools
+# Power BI / AAS public client (well-known, no app registration needed)
 PBI_PUBLIC_CLIENT_ID = "7f67af8a-fedc-4b08-8b4e-37c4d127b6cf"
 AUTHORITY            = "https://login.microsoftonline.com/organizations"
 SCOPES               = ["https://analysis.windows.net/powerbi/api/.default"]
@@ -94,12 +93,41 @@ def api_post(token, url, body):
 
 # ── Find workspace + dataset ───────────────────────────────────────────────
 def find_ids(token):
-    workspaces = api_get(token, f"{PBI_API_BASE}/groups")["value"]
+    # Strategy 1: search datasets directly (doesn't need workspace list permission)
+    try:
+        all_datasets = api_get(token, f"{PBI_API_BASE}/datasets")["value"]
+        ds = next((d for d in all_datasets if d["name"] == DATASET_NAME), None)
+        if ds:
+            ds_id = ds["id"]
+            ws_id = ds.get("workspaceId") or _ws_id_from_groups(token)
+            print(f"✅ Dataset   : {DATASET_NAME}  (ID: {ds_id})")
+            print(f"✅ Workspace ID: {ws_id}")
+            return ws_id, ds_id
+    except Exception as e:
+        print(f"   (datasets endpoint: {e})")
+
+    # Strategy 2: filtered workspace lookup
+    import urllib.parse
+    try:
+        encoded = urllib.parse.quote(WORKSPACE_NAME)
+        resp = api_get(token, f"{PBI_API_BASE}/groups?$filter=name eq '{encoded}'")
+        workspaces = resp.get("value", [])
+    except Exception:
+        workspaces = []
+
+    # Strategy 3: list all groups
+    if not workspaces:
+        try:
+            workspaces = api_get(token, f"{PBI_API_BASE}/groups")["value"]
+        except Exception as e:
+            print(f"\n❌ Cannot list workspaces: {e}")
+            print("   Ensure your Power BI admin has enabled API access for users.")
+            sys.exit(1)
+
     ws = next((w for w in workspaces if w["name"] == WORKSPACE_NAME), None)
     if not ws:
         names = [w["name"] for w in workspaces]
-        print(f"\n❌ Workspace '{WORKSPACE_NAME}' not found.")
-        print(f"   Available workspaces: {names}")
+        print(f"\n❌ Workspace '{WORKSPACE_NAME}' not found. Available: {names}")
         sys.exit(1)
     ws_id = ws["id"]
     print(f"✅ Workspace : {WORKSPACE_NAME}  (ID: {ws_id})")
@@ -108,12 +136,20 @@ def find_ids(token):
     ds = next((d for d in datasets if d["name"] == DATASET_NAME), None)
     if not ds:
         names = [d["name"] for d in datasets]
-        print(f"\n❌ Dataset '{DATASET_NAME}' not found.")
-        print(f"   Available datasets: {names}")
+        print(f"\n❌ Dataset '{DATASET_NAME}' not found. Available: {names}")
         sys.exit(1)
     ds_id = ds["id"]
     print(f"✅ Dataset   : {DATASET_NAME}  (ID: {ds_id})")
     return ws_id, ds_id
+
+def _ws_id_from_groups(token):
+    import urllib.parse
+    encoded = urllib.parse.quote(WORKSPACE_NAME)
+    resp = api_get(token, f"{PBI_API_BASE}/groups?$filter=name eq '{encoded}'")
+    groups = resp.get("value", [])
+    if groups:
+        return groups[0]["id"]
+    return None
 
 # ── Discover schema ────────────────────────────────────────────────────────
 def discover_schema(token, ws_id, ds_id):
