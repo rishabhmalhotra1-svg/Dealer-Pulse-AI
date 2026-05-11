@@ -1,3 +1,4 @@
 .env
 *.csv
 live_dealer_data_*.csv
+.pbi_token_cache.json
