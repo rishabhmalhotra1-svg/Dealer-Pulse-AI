@@ -10,10 +10,9 @@ import json, requests, sys, os
 from msal import PublicClientApplication
 
 # ── Power BI connection details from your XMLA string ─────────────────────
-XMLA_DATA_SOURCE    = "powerbi://api.powerbi.com/v1.0/myorg/Sell%20Analytics"
-INITIAL_CATALOG     = "C2B GROWTH - REFERRAL"
-WORKSPACE_NAME      = "Sell Analytics"
+# Dataset is in "My Workspace" — accessed directly, no group/workspace ID needed
 DATASET_NAME        = "C2B GROWTH - REFERRAL"
+WORKSPACE_NAME      = None   # My Workspace has no group ID in the API
 
 # Power BI / AAS public client (well-known, no app registration needed)
 PBI_PUBLIC_CLIENT_ID = "7f67af8a-fedc-4b08-8b4e-37c4d127b6cf"
@@ -82,81 +81,52 @@ def save_cache(cache):
 
 # ── REST API helpers ───────────────────────────────────────────────────────
 def api_get(token, url):
-    r = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+    r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
     r.raise_for_status()
     return r.json()
 
 def api_post(token, url, body):
-    r = requests.post(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json=body)
+    r = requests.post(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                      json=body, timeout=60)
     r.raise_for_status()
     return r.json()
 
-# ── Find workspace + dataset ───────────────────────────────────────────────
+def dataset_url(ws_id, ds_id, path=""):
+    # My Workspace: /myorg/datasets/{id}/...
+    # Shared workspace: /myorg/groups/{ws_id}/datasets/{id}/...
+    if ws_id:
+        return f"{PBI_API_BASE}/groups/{ws_id}/datasets/{ds_id}{path}"
+    return f"{PBI_API_BASE}/datasets/{ds_id}{path}"
+
+# ── Find dataset in My Workspace ───────────────────────────────────────────
 def find_ids(token):
-    # Strategy 1: search datasets directly (doesn't need workspace list permission)
+    # My Workspace datasets are at /myorg/datasets — no group ID needed
     try:
         all_datasets = api_get(token, f"{PBI_API_BASE}/datasets")["value"]
-        ds = next((d for d in all_datasets if d["name"] == DATASET_NAME), None)
-        if ds:
-            ds_id = ds["id"]
-            ws_id = ds.get("workspaceId") or _ws_id_from_groups(token)
-            print(f"✅ Dataset   : {DATASET_NAME}  (ID: {ds_id})")
-            print(f"✅ Workspace ID: {ws_id}")
-            return ws_id, ds_id
     except Exception as e:
-        print(f"   (datasets endpoint: {e})")
-
-    # Strategy 2: filtered workspace lookup
-    import urllib.parse
-    try:
-        encoded = urllib.parse.quote(WORKSPACE_NAME)
-        resp = api_get(token, f"{PBI_API_BASE}/groups?$filter=name eq '{encoded}'")
-        workspaces = resp.get("value", [])
-    except Exception:
-        workspaces = []
-
-    # Strategy 3: list all groups
-    if not workspaces:
-        try:
-            workspaces = api_get(token, f"{PBI_API_BASE}/groups")["value"]
-        except Exception as e:
-            print(f"\n❌ Cannot list workspaces: {e}")
-            print("   Ensure your Power BI admin has enabled API access for users.")
-            sys.exit(1)
-
-    ws = next((w for w in workspaces if w["name"] == WORKSPACE_NAME), None)
-    if not ws:
-        names = [w["name"] for w in workspaces]
-        print(f"\n❌ Workspace '{WORKSPACE_NAME}' not found. Available: {names}")
+        print(f"❌ Cannot list datasets: {e}")
+        print("   Ensure Power BI Admin → Tenant settings → Developer settings")
+        print("   → 'Users can access Power BI service features using REST APIs' is ON")
         sys.exit(1)
-    ws_id = ws["id"]
-    print(f"✅ Workspace : {WORKSPACE_NAME}  (ID: {ws_id})")
 
-    datasets = api_get(token, f"{PBI_API_BASE}/groups/{ws_id}/datasets")["value"]
-    ds = next((d for d in datasets if d["name"] == DATASET_NAME), None)
+    ds = next((d for d in all_datasets if d["name"] == DATASET_NAME), None)
     if not ds:
-        names = [d["name"] for d in datasets]
-        print(f"\n❌ Dataset '{DATASET_NAME}' not found. Available: {names}")
+        names = [d["name"] for d in all_datasets]
+        print(f"❌ Dataset '{DATASET_NAME}' not found in My Workspace.")
+        print(f"   Found: {names}")
         sys.exit(1)
-    ds_id = ds["id"]
-    print(f"✅ Dataset   : {DATASET_NAME}  (ID: {ds_id})")
-    return ws_id, ds_id
 
-def _ws_id_from_groups(token):
-    import urllib.parse
-    encoded = urllib.parse.quote(WORKSPACE_NAME)
-    resp = api_get(token, f"{PBI_API_BASE}/groups?$filter=name eq '{encoded}'")
-    groups = resp.get("value", [])
-    if groups:
-        return groups[0]["id"]
-    return None
+    ds_id = ds["id"]
+    print(f"✅ Dataset : {DATASET_NAME}  (ID: {ds_id})")
+    print(f"   Location : My Workspace")
+    # My Workspace has no group — use None, calls go to /myorg/datasets/{id}/...
+    return None, ds_id
 
 # ── Discover schema ────────────────────────────────────────────────────────
 def discover_schema(token, ws_id, ds_id):
     print("\n📋 Discovering tables and columns in your dataset...\n")
     try:
-        # Try REST metadata endpoint
-        resp = api_get(token, f"{PBI_API_BASE}/groups/{ws_id}/datasets/{ds_id}/tables")
+        resp = api_get(token, dataset_url(ws_id, ds_id, "/tables"))
         tables = resp.get("value", [])
         for t in tables:
             print(f"  TABLE: {t['name']}")
@@ -166,20 +136,17 @@ def discover_schema(token, ws_id, ds_id):
     except Exception as e:
         print(f"  Metadata API not available ({e}), trying DAX INFO...")
         try:
-            dax = "EVALUATE SELECTCOLUMNS(INFO.TABLES(), \"Table\", [Name])"
-            result = run_dax(token, ws_id, ds_id, dax)
-            import pandas as pd
-            df = pd.DataFrame(result)
+            rows = run_dax(token, ws_id, ds_id,
+                           "EVALUATE SELECTCOLUMNS(INFO.TABLES(), \"Table\", [Name])")
             print("  Tables found:")
-            for t in df.iloc[:, 0].tolist():
-                print(f"    • {t}")
+            for r in rows:
+                print(f"    • {list(r.values())[0]}")
         except Exception as e2:
             print(f"  Could not enumerate tables: {e2}")
-            print("  → The dataset may require Contributor/Member role on the workspace.")
 
 # ── Run DAX query ──────────────────────────────────────────────────────────
 def run_dax(token, ws_id, ds_id, dax):
-    result = api_post(token, f"{PBI_API_BASE}/groups/{ws_id}/datasets/{ds_id}/executeQueries",
+    result = api_post(token, dataset_url(ws_id, ds_id, "/executeQueries"),
                       {"queries": [{"query": dax}], "serializerSettings": {"includeNulls": True}})
     rows = result["results"][0]["tables"][0].get("rows", [])
     return rows
